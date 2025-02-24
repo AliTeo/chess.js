@@ -55,6 +55,8 @@ export const DEFAULT_POSITION =
 export type Piece = {
   color: Color
   type: PieceSymbol
+  id: string
+  probability: number
 }
 
 type InternalMove = {
@@ -653,66 +655,69 @@ export class Chess {
   }
 
   load(fen: string, { skipValidation = false, preserveHeaders = false } = {}) {
-    let tokens = fen.split(/\s+/)
+    let tokens = fen.split(/\s+/);
 
     // append commonly omitted fen tokens
     if (tokens.length >= 2 && tokens.length < 6) {
-      const adjustments = ['-', '-', '0', '1']
-      fen = tokens.concat(adjustments.slice(-(6 - tokens.length))).join(' ')
+      const adjustments = ['-', '-', '0', '1'];
+      fen = tokens.concat(adjustments.slice(-(6 - tokens.length))).join(' ');
     }
 
-    tokens = fen.split(/\s+/)
+    tokens = fen.split(/\s+/);
 
     if (!skipValidation) {
-      const { ok, error } = validateFen(fen)
+      const { ok, error } = validateFen(fen);
       if (!ok) {
-        throw new Error(error)
+        throw new Error(error);
       }
     }
 
-    const position = tokens[0]
-    let square = 0
+    const position = tokens[0];
+    let square = 0;
 
-    this.clear({ preserveHeaders })
+    this.clear({ preserveHeaders });
 
     for (let i = 0; i < position.length; i++) {
-      const piece = position.charAt(i)
+      const piece = position.charAt(i);
 
       if (piece === '/') {
-        square += 8
+        square += 8;
       } else if (isDigit(piece)) {
-        square += parseInt(piece, 10)
+        square += parseInt(piece, 10);
       } else {
-        const color = piece < 'a' ? WHITE : BLACK
+        const color = piece < 'a' ? WHITE : BLACK;
+        const type = piece.toLowerCase() as PieceSymbol;
+        const id = `${type}${algebraic(square)}`;
+        console.log(`Assigning ID ${id} to piece ${type} at ${algebraic(square)}`);
         this._put(
-          { type: piece.toLowerCase() as PieceSymbol, color },
-          algebraic(square),
-        )
-        square++
+          { type, color, id, probability: 1.0 },
+          algebraic(square)
+        );
+        square++;
       }
     }
 
-    this._turn = tokens[1] as Color
+    this._turn = tokens[1] as Color;
 
     if (tokens[2].indexOf('K') > -1) {
-      this._castling.w |= BITS.KSIDE_CASTLE
+      this._castling.w |= BITS.KSIDE_CASTLE;
     }
     if (tokens[2].indexOf('Q') > -1) {
-      this._castling.w |= BITS.QSIDE_CASTLE
+      this._castling.w |= BITS.QSIDE_CASTLE;
     }
     if (tokens[2].indexOf('k') > -1) {
-      this._castling.b |= BITS.KSIDE_CASTLE
+      this._castling.b |= BITS.KSIDE_CASTLE;
     }
     if (tokens[2].indexOf('q') > -1) {
-      this._castling.b |= BITS.QSIDE_CASTLE
+      this._castling.b |= BITS.QSIDE_CASTLE;
     }
 
-    this._epSquare = tokens[3] === '-' ? EMPTY : Ox88[tokens[3] as Square]
-    this._halfMoves = parseInt(tokens[4], 10)
-    this._moveNumber = parseInt(tokens[5], 10)
+    this._epSquare = tokens[3] === '-' ? EMPTY : Ox88[tokens[3] as Square];
+    this._halfMoves = parseInt(tokens[4], 10);
+    this._moveNumber = parseInt(tokens[5], 10);
 
-    this._updateSetup(fen)
-    this._incPositionCount(fen)
+    this._updateSetup(fen);
+    this._incPositionCount(fen);
   }
 
   fen() {
@@ -843,22 +848,26 @@ export class Chess {
   }
 
   put(
-    { type, color }: { type: PieceSymbol; color: Color },
+    { type, color, id, probability = 1.0 }: { type: PieceSymbol; color: Color; id?: string; probability?: number },
     square: Square,
   ): boolean {
-    if (this._put({ type, color }, square)) {
-      this._updateCastlingRights()
-      this._updateEnPassantSquare()
-      this._updateSetup(this.fen())
-      return true
+    if (!id) {
+      id = `${type}${square}`;
     }
-    return false
+    console.log(`Placing piece ${type} at ${square} with ID ${id}`);
+    if (this._put({ type, color, id, probability }, square)) {
+      this._updateCastlingRights();
+      this._updateEnPassantSquare();
+      this._updateSetup(this.fen());
+      return true;
+    }
+    return false;
   }
 
   private _put(
-    { type, color }: { type: PieceSymbol; color: Color },
-    square: Square,
-  ): boolean {
+    { type, color, id, probability = 1.0 }: { type: PieceSymbol; color: Color; id: string; probability?: number },
+  square: Square,
+): boolean {
     // check for piece
     if (SYMBOLS.indexOf(type.toLowerCase()) === -1) {
       return false
@@ -886,7 +895,7 @@ export class Chess {
       this._kings[currentPieceOnSquare.color] = EMPTY
     }
 
-    this._board[sq] = { type: type as PieceSymbol, color: color as Color }
+    this._board[sq] = { type: type as PieceSymbol, color: color as Color, id, probability }
 
     if (type === KING) {
       this._kings[color] = sq
@@ -901,11 +910,11 @@ export class Chess {
     if (piece && piece.type === KING) {
       this._kings[piece.color] = EMPTY
     }
-
+  
     this._updateCastlingRights()
     this._updateEnPassantSquare()
     this._updateSetup(this.fen())
-
+  
     return piece
   }
 
@@ -1513,48 +1522,50 @@ export class Chess {
   }
 
   private _makeMove(move: InternalMove) {
-    const us = this._turn
-    const them = swapColor(us)
-    this._push(move)
-
-    this._board[move.to] = this._board[move.from]
-    delete this._board[move.from]
-
+    const us = this._turn;
+    const them = swapColor(us);
+    this._push(move);
+  
+    this._board[move.to] = { ...this._board[move.from] };
+    //console.log(`Moved piece from ${move.from} to ${move.to} with ID ${this._board[move.to].id}`);
+    delete this._board[move.from];
+  
     // if ep capture, remove the captured pawn
     if (move.flags & BITS.EP_CAPTURE) {
       if (this._turn === BLACK) {
-        delete this._board[move.to - 16]
+        delete this._board[move.to - 16];
       } else {
-        delete this._board[move.to + 16]
+        delete this._board[move.to + 16];
       }
     }
-
+  
     // if pawn promotion, replace with new piece
     if (move.promotion) {
-      this._board[move.to] = { type: move.promotion, color: us }
+      this._board[move.to] = { type: move.promotion, color: us, id: `${move.promotion}${algebraic(move.to)}`, probability: this._board[move.to].probability };
+      console.log(`Promoted piece at ${move.to} to ${move.promotion} with ID ${this._board[move.to].id}`);
     }
-
+  
     // if we moved the king
     if (this._board[move.to].type === KING) {
-      this._kings[us] = move.to
-
+      this._kings[us] = move.to;
+  
       // if we castled, move the rook next to the king
       if (move.flags & BITS.KSIDE_CASTLE) {
-        const castlingTo = move.to - 1
-        const castlingFrom = move.to + 1
-        this._board[castlingTo] = this._board[castlingFrom]
-        delete this._board[castlingFrom]
+        const castlingTo = move.to - 1;
+        const castlingFrom = move.to + 1;
+        this._board[castlingTo] = { ...this._board[castlingFrom] };
+        delete this._board[castlingFrom];
       } else if (move.flags & BITS.QSIDE_CASTLE) {
-        const castlingTo = move.to + 1
-        const castlingFrom = move.to - 2
-        this._board[castlingTo] = this._board[castlingFrom]
-        delete this._board[castlingFrom]
+        const castlingTo = move.to + 1;
+        const castlingFrom = move.to - 2;
+        this._board[castlingTo] = { ...this._board[castlingFrom] };
+        delete this._board[castlingFrom];
       }
-
+  
       // turn off castling
-      this._castling[us] = 0
+      this._castling[us] = 0;
     }
-
+  
     // turn off castling if we move a rook
     if (this._castling[us]) {
       for (let i = 0, len = ROOKS[us].length; i < len; i++) {
@@ -1562,12 +1573,12 @@ export class Chess {
           move.from === ROOKS[us][i].square &&
           this._castling[us] & ROOKS[us][i].flag
         ) {
-          this._castling[us] ^= ROOKS[us][i].flag
-          break
+          this._castling[us] ^= ROOKS[us][i].flag;
+          break;
         }
       }
     }
-
+  
     // turn off castling if we capture a rook
     if (this._castling[them]) {
       for (let i = 0, len = ROOKS[them].length; i < len; i++) {
@@ -1575,37 +1586,37 @@ export class Chess {
           move.to === ROOKS[them][i].square &&
           this._castling[them] & ROOKS[them][i].flag
         ) {
-          this._castling[them] ^= ROOKS[them][i].flag
-          break
+          this._castling[them] ^= ROOKS[them][i].flag;
+          break;
         }
       }
     }
-
+  
     // if big pawn move, update the en passant square
     if (move.flags & BITS.BIG_PAWN) {
       if (us === BLACK) {
-        this._epSquare = move.to - 16
+        this._epSquare = move.to - 16;
       } else {
-        this._epSquare = move.to + 16
+        this._epSquare = move.to + 16;
       }
     } else {
-      this._epSquare = EMPTY
+      this._epSquare = EMPTY;
     }
-
+  
     // reset the 50 move counter if a pawn is moved or a piece is captured
     if (move.piece === PAWN) {
-      this._halfMoves = 0
+      this._halfMoves = 0;
     } else if (move.flags & (BITS.CAPTURE | BITS.EP_CAPTURE)) {
-      this._halfMoves = 0
+      this._halfMoves = 0;
     } else {
-      this._halfMoves++
+      this._halfMoves++;
     }
-
+  
     if (us === BLACK) {
-      this._moveNumber++
+      this._moveNumber++;
     }
-
-    this._turn = them
+  
+    this._turn = them;
   }
 
   undo(): Move | null {
@@ -1649,10 +1660,10 @@ export class Chess {
         } else {
           index = move.to + 16
         }
-        this._board[index] = { type: PAWN, color: them }
+        this._board[index] = { type: PAWN, color: them, id: '', probability: 1.0 }
       } else {
         // regular capture
-        this._board[move.to] = { type: move.captured, color: them }
+        this._board[move.to] = { type: move.captured, color: them, id: '', probability: 1.0 }
       }
     }
 
@@ -2163,7 +2174,7 @@ export class Chess {
      * f7f8q, b1c3
      *
      * NOTE: Some positions and moves may be ambiguous when using the permissive
-     * parser. For example, in this position: 6k1/8/8/B7/8/8/8/BN4K1 w - - 0 1,
+     * parser. For example, in this position: 6k1/8/8/8/B7/8/BN4K1 w - - 0 1,
      * the move b1c3 may be interpreted as Nc3 or B1c3 (a disambiguated bishop
      * move). In these cases, the permissive parser will default to the most
      * basic interpretation (which is b1c3 parsing to Nc3).
